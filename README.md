@@ -1,5 +1,7 @@
 # Promised
+
 ###promise
+
 A flexible delayed-evaluation cached property with get/set/del/init capabilities for inter-property relationships.
 
 ###Member
