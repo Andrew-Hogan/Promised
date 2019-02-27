@@ -5,10 +5,10 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="promised",
-    version="1.0.0",
+    version="1.1.0",
     author="Andrew M. Hogan",
     author_email="drewthedruid@gmail.com",
-    description="A flexible cached property with get/set/del/init/cached-mapping capabilities.",
+    description="A flexible cached property with get/set/del/init/dependant/cached-mapping capabilities.",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/Andrew-Hogan/Promised",

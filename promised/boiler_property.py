@@ -136,6 +136,187 @@ class promise(object):
     __str__ = __repr__
 
 
+class linked(object):
+    """
+    A flexible cached property with get/set/del/init/dependant capabilities for inter-property relationships.
+
+    Usage:
+        For most usage, see promise decorator.
+
+        Besides a default getter, this decorator has a default deleter & setter as well.
+
+        Use @property_name.linked above any other property to call that property's delete method whenever a linker of
+        this property is called. (can be placed above getter / keeper / deleter / setter - needs to be done only once.)
+
+        Linkers of this property are by default deleter and setter, but if linkers (tuple) is passed at init,
+            the default deleter and setter will not be linkers. In that case, only methods decorated by the linker
+            method will trigger linked property updates.
+
+        Pass "False" for deleter or setter if no-delete / no-write behavior desired.
+
+    Defaults:
+        deleter: lambda x: delattr(x, self._name)
+        setter: lambda x, y: setattr(x, self._name, y)
+        getter: lambda x: getattr(x, self._name)
+
+        linkers: ('deleter', 'setter')
+    """
+    def __init__(self, keeper=None, name=None, doc=None, getter=None, deleter=None, setter=None, linkers=None):
+        self._linked = set()
+        old_linker = self.linker
+        if linkers is not None:
+            self.linker = lambda _: None  # Linker decorated temporarily removed to prevent default linkers if linkers.
+        self._most_recent_linker = None
+        self._name = name
+        self.doc = doc
+        self.keeper(keeper)
+        self.getter(getter)
+        if setter is not False:
+            self.setter(setter)
+        else:
+            self._setter = None
+        if deleter is not False:
+            self.deleter(deleter)
+        else:
+            self._deleter = None
+        if linkers is not None:
+            self._set_explicit_linkers(linkers, old_linker)
+
+    def _set_explicit_linkers(self, linkers, old_linker):
+        """Set explicit linkers at end of init and restore linker decorator."""
+        if isinstance(linkers, str):
+            self._linker(linkers)
+        else:
+            for linker in linkers:
+                self._linker(linker)
+        self.linker = old_linker
+
+    def keeper(self, _keeper):
+        """Set keeper and _name / doc from init or decoration."""
+        self._most_recent_linker = self._linked_keeper
+        if _keeper:
+            self._name = "_" + _keeper.__name__ if self._name is None else self._name  # First pref is init name arg
+            self.__doc__ = _keeper.__doc__ if self.doc is None else self.doc  # First pref is init doc arg
+        else:
+            self._name = self._name if self._name is not None else "_broken_link"
+            if self.doc:
+                self.__doc__ = self.doc
+        self._keeper = _keeper
+        return self
+
+    def setter(self, _setter):
+        """Set setter if provided else default setter (with linked-deletion calls if no init linkers)."""
+        self._most_recent_linker = self._linked_setter
+        if _setter is None:
+            self._setter = lambda x, y: setattr(x, self._name, y)
+            self.linker(self)
+        else:
+            self._setter = _setter
+        return self
+
+    def getter(self, _getter):
+        """Set getter if provided else default getter of getattr(x, self._name)."""
+        self._most_recent_linker = self._linked_getter
+        self._getter = _getter if _getter is not None else lambda x: getattr(x, self._name)
+        return self
+
+    def deleter(self, _deleter):
+        """Set deleter if provided else access-safe default deleter (with linked-deletion calls if no init linkers.)"""
+        self._most_recent_linker = self._linked_deleter
+        if _deleter is None:
+            self._deleter = self._default_deleter
+            self.linker(self)
+        else:
+            self._most_recently_decorated = self._deleter = _deleter
+        return self
+
+    def _default_deleter(self, obj):
+        """Use delattr(obj, self._name) as default deleter if no deleter decorated nor provided at init."""
+        try:
+            delattr(obj, self._name)
+        except AttributeError:
+            pass
+
+    def _linked_deleter(self, obj):
+        """Called before deleter if deleter is linker. (True if no linkers at init and default deleter.)"""
+        self._hidden_deleter(obj)
+        self._update_linked(obj)
+
+    def _linked_setter(self, instance, value):
+        """Called before setter if setter is linker. (True if no linkers at init and default setter.)"""
+        self._hidden_setter(instance, value)
+        self._update_linked(instance)
+
+    def _linked_getter(self, instance):
+        """Called before getter if getter is linker. (Not default - will delete dependents on every access.)"""
+        try:
+            self._hidden_getter(instance)
+        except AttributeError:
+            raise
+        else:
+            self._update_linked(instance)
+
+    def _linked_keeper(self, instance):
+        """Called before keeper if keeper is linker. (Not default - will delete dependents on every default call.)"""
+        self._hidden_keeper(instance)
+        self._update_linked(instance)
+
+    def _update_linked(self, obj):
+        """Delete linked properties for value refresh."""
+        old_deleter = self._deleter
+        self._deleter = lambda _: None  # Temporarily remove deleter to prevent recursion & undoing value set.
+        for linked_property in self._linked:
+            linked_property.__delete__(obj)
+        self._deleter = old_deleter
+
+    def _linker(self, public_name):
+        """Links explicitly passed linkers from init."""
+        setattr(self, f"_hidden_{public_name}", getattr(self, f"_{public_name}"))
+        setattr(self, f"_{public_name}", getattr(self, f"_linked_{public_name}"))
+
+    def linker(self, _linker):
+        """Links explicitly decorated linkers and default linkers (if no linkers or del / set passed in init)."""
+        if isinstance(_linker, str):
+            old_name = f"_{_linker}"
+            new_func = getattr(self, f"_linked{old_name}")
+        else:
+            new_func = self._most_recent_linker
+            old_name = new_func.__name__[7:]
+        setattr(self, f"_hidden{old_name}", getattr(self, old_name))
+        setattr(self, old_name, new_func)
+        return _linker  # Should be self
+
+    def linked(self, linked_attribute):
+        """Adds property to set of linked properties to be updated (deleted) when a linker-method is called."""
+        self._linked.add(linked_attribute)
+        return linked_attribute
+
+    def __call__(self, func):
+        self.keeper(func)
+        return self
+
+    def __get__(self, instance, owner):
+        try:
+            return self._getter(instance)
+        except AttributeError:
+            if instance is None:
+                return self
+            assert self._keeper is not None, AttributeError("Linked property keeper not set.")
+            self._keeper(instance)
+        return self._getter(instance)
+
+    def __set__(self, instance, value):
+        self._setter(instance, value)
+
+    def __delete__(self, obj):
+        self._deleter(obj)
+
+    def __repr__(self, *_, **__):
+        return f"<Linked hidden attribute {self._name} id #{id(self)}>"
+
+    __str__ = __repr__
+
+
 class Member(object):
     """
     A map of cached properties per input key which will cache a property for that key when first accessed.
@@ -220,7 +401,7 @@ _TEST_VALUE = "Set by promise keeper"
 
 
 class _TestClass(object):
-    """This is a test class. I don't know what more you're expecting."""
+    """This is a test class for promises & Members. I don't know what more you're expecting."""
     @promise
     def test_attribute(self):
         assert self.__class__ is _TestClass, "Keeper method not bound to instance of _TestClass."
@@ -260,6 +441,57 @@ class _TestClass(object):
     __str__ = __repr__
 
 
+_TEST_VALUE_TWO = "Set by linked update"
+
+
+class _TestClassTwo(object):
+    """This is a test class for linked promises. I don't know what more you're expecting."""
+    @linked
+    def test_linked_link(self):
+        assert self.__class__ is _TestClassTwo, "Linked link keeper method not bound to instance of _TestClassTwo."
+        assert not hasattr(self, "_test_linked_link"), ("Linked link keeper method called "
+                                                        "despite existing self._test_linked_link.")
+        self._test_linked_link = _TEST_VALUE
+        assert self._test_linked_link == _TEST_VALUE, ("self._test_linked_link not set to _TEST_VALUE "
+                                                       "in linked link keeper.")
+
+    @test_linked_link.linked
+    @linked
+    def test_link(self):
+        assert self.__class__ is _TestClassTwo, "Link keeper method not bound to instance of _TestClassTwo."
+        assert not hasattr(self, "_test_link"), "Link keeper method called despite existing self._test_link."
+        self._test_link = _TEST_VALUE
+        assert self._test_link == _TEST_VALUE, "self._test_link not set to _TEST_VALUE in link keeper."
+
+    @test_link.linked
+    @test_linked_link.setter
+    def test_linked_link(self, value):
+        assert self.__class__ is _TestClassTwo, "Linked setter method not bound to instance of _TestClassTwo."
+        self._test_linked_link = value
+        assert self._test_linked_link == value, "self._test_linked_link not set to value in setter."
+
+    @promise
+    def test_attribute(self):
+        assert self.__class__ is _TestClassTwo, "Keeper method not bound to instance of _TestClassTwo."
+        assert not hasattr(self, "_test_attribute"), "Keeper method called despite existing self._test_attribute."
+        self._test_attribute = self.test_link
+        assert self._test_attribute == self.test_link, "self._test_attribute not set to self.test_link in keeper."
+
+    test_link.linked(test_attribute)
+
+    @test_attribute.deleter
+    def test_attribute(self):
+        assert self.__class__ is _TestClassTwo, "Deleter method not bound to instance of _TestClassTwo."
+        del self._test_attribute
+        assert not hasattr(self, "_test_attribute"), "self._test_attribute not deleted in deleter."
+
+    @test_attribute.setter
+    def test_attribute(self, value):
+        assert self.__class__ is _TestClassTwo, "Setter method not bound to instance of _TestClassTwo."
+        self._test_attribute = value
+        assert self._test_attribute == value, "self._test_attribute not set to value in setter."
+
+
 def _test_functionality():
     _test_object = _TestClass()
     _test = _test_object.test_attribute
@@ -281,9 +513,75 @@ def _test_functionality():
     assert 2 not in _test_object.test_member, "Test member key was not deleted."
 
 
+def _test_linkers():
+    _test_object = _TestClassTwo()
+
+    _test = _test_object.test_attribute
+    print(f"Test attribute value: {_test}")
+    assert _test == _TEST_VALUE, "Test values did not match."
+
+    _test_link = _test_object.test_link
+    print(f"Test link value: {_test_link}")
+    assert _test_link == _TEST_VALUE, "Linked test values did not match."
+
+    # Basic setting of linked link
+
+    _test_linked_link = _test_object.test_linked_link
+    print(f"Test linked link value: {_test_linked_link}")
+    assert _test_linked_link == _TEST_VALUE, "Linked link test values did not match."
+
+    _test_object.test_linked_link = _TEST_VALUE_TWO
+    _test_linked_link = _test_object.test_linked_link
+    print(f"Test linked link value: {_test_linked_link}")
+    assert _test_linked_link == _TEST_VALUE_TWO, "Linked link new test values did not match."
+
+    # Updating test_link attribute should also delete / reset test_linked_link attribute and test_attribute
+
+    _test_object.test_link = _TEST_VALUE_TWO
+    assert not hasattr(_test_object, '_test_linked_link'), "Test linked link not deleted after setting linked."
+    _test_linked_link = _test_object.test_linked_link
+    print(f"Test linked link value: {_test_linked_link}")
+    assert _test_linked_link == _TEST_VALUE, "Reset linked link test values did not match."
+
+    _test_link = _test_object.test_link
+    print(f"New test link value: {_test_link}")
+    assert _test_link == _TEST_VALUE_TWO, "New linked test values did not match."
+    assert not hasattr(_test_object, '_test_attribute'), "Test attribute not deleted after setting linked."
+
+    _test = _test_object.test_attribute
+    print(f"New test attribute value: {_test}")
+    assert _test == _TEST_VALUE_TWO, "New test values did not match."
+
+    # Update test_linked_link attribute should not reset test_link as setter is explicit
+
+    _test_object.test_linked_link = _TEST_VALUE_TWO
+    assert hasattr(_test_object, '_test_link'), "Test linked deleted after setting linked link."
+    assert hasattr(_test_object, '_test_attribute'), "Test attribute deleted after setting linked link."
+    _test_linked_link = _test_object.test_linked_link
+    assert _test_linked_link == _TEST_VALUE_TWO, "Linked link new test values did not match."
+
+    # Deleting test_linked_link attribute should reset test_link and test_attribute as deleter is default and no init linkers
+
+    del _test_object.test_linked_link
+    assert not hasattr(_test_object, '_test_link'), "Test linked not deleted after deleting linked link."
+    assert not hasattr(_test_object, '_test_attribute'), "Test attribute not deleted after deleting linked link."
+    assert not hasattr(_test_object, '_test_linked_link'), "Test linked link not deleted after deleting linked link."
+    _test_linked_link = _test_object.test_linked_link
+    assert _test_linked_link == _TEST_VALUE, "Restored linked link test values did not match."
+
+    _test_link = _test_object.test_link
+    print(f"Restored test link value: {_test_link}")
+    assert _test_link == _TEST_VALUE, "Restored linked test values did not match."
+
+    _test = _test_object.test_attribute
+    print(f"Restored test attribute value: {_test}")
+    assert _test == _TEST_VALUE, "Restored test values did not match."
+
+
 def main():
     """Run tests to ensure everything still works."""
     _test_functionality()
+    _test_linkers()
     print("Tests passed!")
 
 
