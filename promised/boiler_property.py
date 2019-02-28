@@ -232,6 +232,7 @@ class linked(object):
 
     def _default_deleter(self, obj):
         """Use delattr(obj, self._name) as default deleter if no deleter decorated nor provided at init."""
+        print(f"DELETER: {obj}")
         try:
             delattr(obj, self._name)
         except AttributeError:
@@ -266,7 +267,10 @@ class linked(object):
         old_deleter = self._deleter
         self._deleter = lambda _: None  # Temporarily remove deleter to prevent recursion & undoing value set.
         for linked_property in self._linked:
-            linked_property.__delete__(obj)
+            try:
+                linked_property.__delete__(obj)
+            except AttributeError:
+                pass
         self._deleter = old_deleter
 
     def _linker(self, public_name):
@@ -576,6 +580,11 @@ def _test_linkers():
     _test = _test_object.test_attribute
     print(f"Restored test attribute value: {_test}")
     assert _test == _TEST_VALUE, "Restored test values did not match."
+
+    # Deleting a property shouldn't cause an error if its dependent properties were not needed between deletions.
+
+    del _test_object.test_link
+    del _test_object.test_link
 
 
 def main():
