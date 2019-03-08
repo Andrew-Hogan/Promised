@@ -25,8 +25,64 @@ from promised import promise, linked, Member  # linked are dependent promises, M
 ```
 
 ## Purpose
+This project currently functions as an easy method for managing property dependencies, for example:
 
-Why? Because I found myself doing this too often:
+```
+class _TestLine(object):
+    @linked
+    def length(self):
+        self._length = 2.0
+
+
+class _TestSquare(object):
+    @linked(chain=True)
+    def side(self):
+        self._side = _TestLine()
+
+    @side.chain("length")
+    def width(self):
+        self._width = self.side.length
+
+    @side.chain("length")
+    def height(self):
+        self._height = self.side.length
+
+    @width.linked
+    @height.linked
+    def area(self):
+        self._area = self.width * self.height
+
+
+class _TestBox(object):
+    """This is a test class for linked promises. I don't know what more you're expecting."""
+    @linked(chain=True)
+    def side(self):
+        self._side = _TestLine()
+
+    @linked(chain=True)
+    def base(self):
+        self._base = _TestSquare()
+
+    @side.chain("length")
+    @base.chain("area")
+    def volume(self):
+        self._volume = self.base.area * self.side.length
+
+
+def _test_area():
+    box = _TestBox()
+    assert box.volume == 8.0, "Box volume is 2.0 * 2.0 * 2.0 as Line's default length is 2.0"
+    box.side.length = 4
+    assert box.volume == 16.0, "Box volume has updated due to change in side's length."
+    box.base.side.length = 10
+    assert box.volume == 400.0, "Box volume has update due to change in base's side length."
+    line = _TestLine()
+    line.length = 0.5
+    box.side = line
+    assert box.volume == 50.0, "Box volume has updated due to changed side."
+```
+
+This started because I found myself doing this too often:
 ```
 @property
 def property_public_name(self):
@@ -112,7 +168,6 @@ def heroes(self):
     self._heroes = None
 
 @heroes.linked
-@linked
 def future_of_townsville(self):
     self._future_of_townsville = "Bleak" if not self.heroes else "FAN-tastic!"
 
@@ -132,6 +187,25 @@ def property_which_refreshes_dependent_properties_when_keeper_method_used(self):
 def read_only_property_which_refreshes_dependent_properties_on_every_access(self):
     """Not advised for properties which access this property once reset (as the typical dependent property would.)"""
     self._read_only_property_which_refreshes_dependent_properties_on_every_access = None
+```
+
+You can use the chain=True init argument of @linked properties to designate an inter-class dependency source.
+```
+@linked(chain=True)
+def side(self):
+    self._side = _TestLine()
+
+@linked(chain=True)
+def base(self):
+    self._base = _TestSquare()
+```
+
+And use @dependency_source.chain("dependent_property_name") to mimic the intra-class behavior of @property_name.linked.
+```
+@side.chain("length")
+@base.chain("area")
+def volume(self):
+    self._volume = self.base.area * self.side.length
 ```
 
 You can use the Member class to create a cached promised property which varies on input (like memoization, but explicitly mutable / not-mutable):

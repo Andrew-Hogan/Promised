@@ -1,4 +1,10 @@
 """Let's get excited about making some boilerplate properties!"""
+import re
+
+
+def name_to_snake_case(name):
+    """Converts a name from CamelCase to snake_case."""
+    return re.sub('((?!^)(?<!_)[A-Z][a-z]+|(?<=[a-z0-9])[A-Z])', r'_\1', name).lower()
 
 
 class promise(object):
@@ -87,6 +93,7 @@ class promise(object):
 
     def keeper(self, _keeper):
         if _keeper:
+            self._attribute_name_of_class_instance = name_to_snake_case(_keeper.__qualname__.split(".")[-2])
             self._name = "_" + _keeper.__name__ if self._name is None else self._name  # First pref is init name arg
             self.__doc__ = _keeper.__doc__ if self.doc is None else self.doc  # First pref is init doc arg
         else:
@@ -161,8 +168,12 @@ class linked(object):
 
         linkers: ('deleter', 'setter')
     """
-    def __init__(self, keeper=None, name=None, doc=None, getter=None, deleter=None, setter=None, linkers=None):
+    def __init__(self, keeper=None, *, name=None, doc=None, getter=None, deleter=None, setter=None, linkers=None, chain=False):
         self._linked = set()
+        self._external_linked = {}
+        self._chain = chain
+        self._internal_to_chain = {}
+        self._most_recent_internal = None
         old_linker = self.linker
         if linkers is not None:
             self.linker = lambda _: None  # Linker decorated temporarily removed to prevent default linkers if linkers.
@@ -194,25 +205,52 @@ class linked(object):
     def keeper(self, _keeper):
         """Set keeper and _name / doc from init or decoration."""
         self._most_recent_linker = self._linked_keeper
+        self._attribute_name_of_class_instance = _keeper if _keeper is None else name_to_snake_case(_keeper.__qualname__.split(".")[-2])
         if _keeper:
             self._name = "_" + _keeper.__name__ if self._name is None else self._name  # First pref is init name arg
             self.__doc__ = _keeper.__doc__ if self.doc is None else self.doc  # First pref is init doc arg
         else:
-            self._name = self._name if self._name is not None else "_broken_link"
             if self.doc:
                 self.__doc__ = self.doc
-        self._keeper = _keeper
+        if self._chain:
+            self._chain_keeper = _keeper
+            self._keeper = self.chain_keeper
+        else:
+            self._keeper = _keeper
         return self
+
+    def chain_keeper(self, instance):
+        self._chain_keeper(instance)
+        setattr(self._getter(instance), self._attribute_name_of_class_instance, instance)
 
     def setter(self, _setter):
         """Set setter if provided else default setter (with linked-deletion calls if no init linkers)."""
         self._most_recent_linker = self._linked_setter
         if _setter is None:
             self._setter = lambda x, y: setattr(x, self._name, y)
+            if self._chain:
+                self._chain_setter = self._setter
+                self._setter = self.chain_setter
             self.linker(self)
         else:
             self._setter = _setter
+            if self._chain:
+                self._chain_setter = self._setter
+                self._setter = self.chain_setter
         return self
+
+    def chain_setter(self, instance, value):
+        try:
+            existing = self._getter(instance)
+        except AttributeError:
+            pass
+        else:
+            try:
+                delattr(existing, self._attribute_name_of_class_instance)
+            except AttributeError:
+                pass
+        self._chain_setter(instance, value)
+        setattr(self._getter(instance), self._attribute_name_of_class_instance, instance)
 
     def getter(self, _getter):
         """Set getter if provided else default getter of getattr(x, self._name)."""
@@ -225,14 +263,31 @@ class linked(object):
         self._most_recent_linker = self._linked_deleter
         if _deleter is None:
             self._deleter = self._default_deleter
+            if self._chain:
+                self._chain_deleter = self._deleter
+                self._deleter = self.chain_deleter
             self.linker(self)
         else:
-            self._most_recently_decorated = self._deleter = _deleter
+            self._deleter = _deleter
+            if self._chain:
+                self._chain_deleter = self._deleter
+                self._deleter = self.chain_deleter
         return self
+
+    def chain_deleter(self, obj):
+        try:
+            existing = self._getter(obj)
+        except AttributeError:
+            pass
+        else:
+            try:
+                delattr(existing, self._attribute_name_of_class_instance)
+            except AttributeError:
+                pass
+        self._chain_deleter(obj)
 
     def _default_deleter(self, obj):
         """Use delattr(obj, self._name) as default deleter if no deleter decorated nor provided at init."""
-        print(f"DELETER: {obj}")
         try:
             delattr(obj, self._name)
         except AttributeError:
@@ -271,6 +326,19 @@ class linked(object):
                 linked_property.__delete__(obj)
             except AttributeError:
                 pass
+        for linked_instance_name, linked_instance_properties in self._external_linked.items():
+            try:
+                instance = getattr(obj, linked_instance_name)
+            except AttributeError:
+                pass
+                # print(f"Error updating external linked for linked {linked_instance_name} in {obj}: {e}")
+            else:
+                for linked_property in linked_instance_properties:
+                    try:
+                        linked_property.__delete__(instance)
+                        # print(f"Deleted property {linked_property} in external {instance}!")
+                    except AttributeError:
+                        pass
         self._deleter = old_deleter
 
     def _linker(self, public_name):
@@ -290,10 +358,53 @@ class linked(object):
         setattr(self, old_name, new_func)
         return _linker  # Should be self
 
-    def linked(self, linked_attribute):
+    def linked(self, linked_attribute):  # TODO: Add optional args for designating auto-created property attributes? (e.g. _name)
         """Adds property to set of linked properties to be updated (deleted) when a linker-method is called."""
-        self._linked.add(linked_attribute)
+        try:
+            name = linked_attribute._attribute_name_of_class_instance
+        except AttributeError:
+            linked_attribute = linked(linked_attribute)
+            name = linked_attribute._attribute_name_of_class_instance
+            self._linked.add(linked_attribute)
+        if name != self._attribute_name_of_class_instance:
+            try:
+                self._external_linked[name].add(linked_attribute)
+            except KeyError:
+                self._external_linked.update({name: {linked_attribute}})
+        else:
+            self._linked.add(linked_attribute)
         return linked_attribute
+
+    def chain(self, linked_property_name):  # TODO: Add optional args for designating auto-created property attributes? (e.g. _name)
+        """Adds property to set of linked properties to be updated (deleted) when a linker-method is called."""
+        print(f"Chaining {linked_property_name} internally")
+        self._most_recent_internal = linked_property_name
+        if not hasattr(self, "_internal_chain_keeper"):
+            self._internal_chain_keeper = self._keeper
+            self._keeper = self.internal_chain_keeper
+        return self._setup_internal_chain
+
+    def _setup_internal_chain(self, linked_attribute):  # TODO: Currently assumes return from this property's keeper will only ever be one class.
+        linked_property_name = self._most_recent_internal
+        print(f"Chaining {linked_property_name} externally")
+        try:
+            _ = linked_attribute._attribute_name_of_class_instance
+        except AttributeError:
+            linked_attribute = linked(linked_attribute)
+        try:
+            self._internal_to_chain[linked_property_name].add(linked_attribute)
+        except KeyError:
+            self._internal_to_chain.update({linked_property_name: {linked_attribute}})
+        return linked_attribute
+
+    def internal_chain_keeper(self, instance):
+        self._internal_chain_keeper(instance)
+        to_chain = self._getter(instance).__class__
+        for property_key, chained_attributes in self._internal_to_chain.items():
+            this_property = to_chain.__dict__[property_key]
+            for attribute in chained_attributes:
+                this_property.linked(attribute)
+        self._keeper = self._internal_chain_keeper
 
     def __call__(self, func):
         self.keeper(func)
@@ -496,6 +607,65 @@ class _TestClassTwo(object):
         assert self._test_attribute == value, "self._test_attribute not set to value in setter."
 
 
+_TEST_LENGTH_INIT = 2
+_TEST_LENGTH_A = 5
+_TEST_AREA_INIT = _TEST_LENGTH_INIT ** 2
+_TEST_VOLUME_INIT = _TEST_AREA_INIT * _TEST_LENGTH_INIT
+_TEST_AREA_A = _TEST_LENGTH_A ** 2
+_TEST_VOLUME_A_INIT_DEPTH = _TEST_AREA_A * _TEST_LENGTH_INIT
+_TEST_VOLUME_A = _TEST_AREA_A * _TEST_LENGTH_A
+
+
+class _TestLine(object):
+    """This is a test class for linked promises. I don't know what more you're expecting."""
+    def __init__(self, length=_TEST_LENGTH_INIT):
+        self._length = length
+
+    @linked
+    def length(self):
+        self._length = _TEST_LENGTH_A
+
+
+class _TestSquare(object):
+    """This is a test class for linked promises. I don't know what more you're expecting."""
+    def __init__(self, width=None):
+        if width is not None:
+            self._side = _TestLine(width)
+
+    @linked(chain=True)
+    def side(self):
+        self._side = _TestLine()
+
+    @side.chain("length")
+    def width(self):
+        self._width = self.side.length
+
+    @side.chain("length")
+    def height(self):
+        self._height = self.side.length
+
+    @width.linked
+    @height.linked
+    def area(self):
+        self._area = self.width * self.height
+
+
+class _TestBox(object):
+    """This is a test class for linked promises. I don't know what more you're expecting."""
+    @linked(chain=True)
+    def side(self):
+        self._side = _TestLine()
+
+    @linked(chain=True)
+    def base(self):
+        self._base = _TestSquare()
+
+    @side.chain("length")
+    @base.chain("area")
+    def volume(self):
+        self._volume = self.base.area * self.side.length
+
+
 def _test_functionality():
     _test_object = _TestClass()
     _test = _test_object.test_attribute
@@ -587,10 +757,49 @@ def _test_linkers():
     del _test_object.test_link
 
 
+def _test_external_linkers():
+    line = _TestLine()
+    square = _TestSquare()
+    box = _TestBox()
+
+    # Values should be equal to defaults
+    assert line.length == _TEST_LENGTH_INIT
+    print(f"Default line length: {line.length}")
+    assert square.area == _TEST_AREA_INIT
+    print(f"Default square area: {square.area}")
+    assert box.volume == _TEST_VOLUME_INIT
+    print(f"Default box volume: {box.volume}")
+
+    # Values should not change for unlinked objects despite linked classes
+    line.length = _TEST_LENGTH_A
+    assert line.length == _TEST_LENGTH_A
+    assert square.area == _TEST_AREA_INIT
+    assert box.volume == _TEST_VOLUME_INIT
+
+    # Value of square should change as line's length keeper sets length to A
+    del square.side.length
+    assert square.area == _TEST_AREA_A
+    # Unlinked box should remain the same.
+    assert box.volume == _TEST_VOLUME_INIT
+
+    # Volume of box should change if its base's sides' lengths are changed
+    del box.base.side.length
+    assert box.volume == _TEST_VOLUME_A_INIT_DEPTH
+
+    # Volume of box should change if its side length is changed.
+    del box.side.length
+    assert box.volume == _TEST_VOLUME_A
+
+    # Unlinked objects should remain the same.
+    assert square.area == _TEST_AREA_A
+    assert line.length == _TEST_LENGTH_A
+
+
 def main():
     """Run tests to ensure everything still works."""
     _test_functionality()
     _test_linkers()
+    _test_external_linkers()
     print("Tests passed!")
 
 
