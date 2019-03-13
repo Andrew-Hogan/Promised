@@ -1,5 +1,6 @@
 """Let's get excited about making some boilerplate properties!"""
 import re
+from typing import Union, List
 
 
 def name_to_snake_case(name):
@@ -168,18 +169,41 @@ class linked(object):
 
         linkers: ('deleter', 'setter')
     """
-    def __init__(self, keeper=None, *, name=None, doc=None, getter=None, deleter=None, setter=None, linkers=None, chain=False):
-        self._linked = set()
-        self._external_linked = {}
-        self._chain = chain
-        self._internal_to_chain = {}
-        self._most_recent_internal = None
+    def __init__(self, keeper: callable = None, *,
+                 name: str = None,
+                 doc: str = None,
+                 getter: Union[bool, callable] = None,
+                 deleter: Union[bool, callable] = None,
+                 setter: Union[bool, callable] = None,
+                 linkers: Union[List[str], str] = None,
+                 chain: bool = False):
+        """
+        :Parameters:
+            :param keeper: Method to create value of property when accessed with AttributeError.
+            :param name: Name to access stored property value using by default or "_" + keeper.__name__ if None.
+            :param doc: Docstring for property value or keeper.__doc__ if None.
+            :param getter: Getter for accessing stored property value, getattr(obj, self._name) if None,
+                or disabled if False.
+            :param deleter: Deleter for clearing stored property value, delattr(obj, self._name) if None,
+                or disabled if False.
+            :param setter: Setter for changing stored property value, setattr(object, self._name, value) if None,
+                or disabled if False.
+            :param linkers: Methods which should cause a refresh in linked properties -
+                default equivalent to ["deleter", "setter"]. Disabled if value is [].
+            :param chain: True if this property is a source of property dependencies external to the instance's class.
+                If True, this property should only ever return instances of a single class.
+        """
+        self._linked = set()  # Linked properties
+        self._external_linked = {}  # External dependent properties to be updated in another class upon change.
+        self._chain = chain  # Boolean - is chain dependency source?
+        self._internal_to_chain = {}  # Dependent properties to be updated from this property's value's class upon change.
+        self._most_recent_internal = None  # Tracks most recent chain-decorated methods.
         old_linker = self.linker
         if linkers is not None:
             self.linker = lambda _: None  # Linker decorated temporarily removed to prevent default linkers if linkers.
-        self._most_recent_linker = None
-        self._name = name
-        self.doc = doc
+        self._most_recent_linker = None  # Tracks most recent link-decorated methods.
+        self._name = name  # Name of hidden attribute in source class. (set in keeper)
+        self.doc = doc  # Doc of attribute in source class.
         self.keeper(keeper)
         self.getter(getter)
         if setter is not False:
@@ -192,15 +216,6 @@ class linked(object):
             self._deleter = None
         if linkers is not None:
             self._set_explicit_linkers(linkers, old_linker)
-
-    def _set_explicit_linkers(self, linkers, old_linker):
-        """Set explicit linkers at end of init and restore linker decorator."""
-        if isinstance(linkers, str):
-            self._linker(linkers)
-        else:
-            for linker in linkers:
-                self._linker(linker)
-        self.linker = old_linker
 
     def keeper(self, _keeper):
         """Set keeper and _name / doc from init or decoration."""
@@ -219,9 +234,29 @@ class linked(object):
             self._keeper = _keeper
         return self
 
+    def _linked_keeper(self, instance):
+        """Called before keeper if keeper is linker. (Not default - will delete dependents on every default call.)"""
+        self._hidden_keeper(instance)
+        self._update_linked(instance)
+
     def chain_keeper(self, instance):
         self._chain_keeper(instance)
         setattr(self._getter(instance), self._attribute_name_of_class_instance, instance)
+
+    def getter(self, _getter):
+        """Set getter if provided else default getter of getattr(x, self._name)."""
+        self._most_recent_linker = self._linked_getter
+        self._getter = _getter if _getter is not None else lambda x: getattr(x, self._name)
+        return self
+
+    def _linked_getter(self, instance):
+        """Called before getter if getter is linker. (Not default - will delete dependents on every access.)"""
+        try:
+            self._hidden_getter(instance)
+        except AttributeError:
+            raise
+        else:
+            self._update_linked(instance)
 
     def setter(self, _setter):
         """Set setter if provided else default setter (with linked-deletion calls if no init linkers)."""
@@ -239,6 +274,11 @@ class linked(object):
                 self._setter = self.chain_setter
         return self
 
+    def _linked_setter(self, instance, value):
+        """Called before setter if setter is linker. (True if no linkers at init and default setter.)"""
+        self._hidden_setter(instance, value)
+        self._update_linked(instance)
+
     def chain_setter(self, instance, value):
         try:
             existing = self._getter(instance)
@@ -251,12 +291,6 @@ class linked(object):
                 pass
         self._chain_setter(instance, value)
         setattr(self._getter(instance), self._attribute_name_of_class_instance, instance)
-
-    def getter(self, _getter):
-        """Set getter if provided else default getter of getattr(x, self._name)."""
-        self._most_recent_linker = self._linked_getter
-        self._getter = _getter if _getter is not None else lambda x: getattr(x, self._name)
-        return self
 
     def deleter(self, _deleter):
         """Set deleter if provided else access-safe default deleter (with linked-deletion calls if no init linkers.)"""
@@ -274,18 +308,6 @@ class linked(object):
                 self._deleter = self.chain_deleter
         return self
 
-    def chain_deleter(self, obj):
-        try:
-            existing = self._getter(obj)
-        except AttributeError:
-            pass
-        else:
-            try:
-                delattr(existing, self._attribute_name_of_class_instance)
-            except AttributeError:
-                pass
-        self._chain_deleter(obj)
-
     def _default_deleter(self, obj):
         """Use delattr(obj, self._name) as default deleter if no deleter decorated nor provided at init."""
         try:
@@ -298,24 +320,17 @@ class linked(object):
         self._hidden_deleter(obj)
         self._update_linked(obj)
 
-    def _linked_setter(self, instance, value):
-        """Called before setter if setter is linker. (True if no linkers at init and default setter.)"""
-        self._hidden_setter(instance, value)
-        self._update_linked(instance)
-
-    def _linked_getter(self, instance):
-        """Called before getter if getter is linker. (Not default - will delete dependents on every access.)"""
+    def chain_deleter(self, obj):
         try:
-            self._hidden_getter(instance)
+            existing = self._getter(obj)
         except AttributeError:
-            raise
+            pass
         else:
-            self._update_linked(instance)
-
-    def _linked_keeper(self, instance):
-        """Called before keeper if keeper is linker. (Not default - will delete dependents on every default call.)"""
-        self._hidden_keeper(instance)
-        self._update_linked(instance)
+            try:
+                delattr(existing, self._attribute_name_of_class_instance)
+            except AttributeError:
+                pass
+        self._chain_deleter(obj)
 
     def _update_linked(self, obj):
         """Delete linked properties for value refresh."""
@@ -341,11 +356,6 @@ class linked(object):
                         pass
         self._deleter = old_deleter
 
-    def _linker(self, public_name):
-        """Links explicitly passed linkers from init."""
-        setattr(self, f"_hidden_{public_name}", getattr(self, f"_{public_name}"))
-        setattr(self, f"_{public_name}", getattr(self, f"_linked_{public_name}"))
-
     def linker(self, _linker):
         """Links explicitly decorated linkers and default linkers (if no linkers or del / set passed in init)."""
         if isinstance(_linker, str):
@@ -357,6 +367,20 @@ class linked(object):
         setattr(self, f"_hidden{old_name}", getattr(self, old_name))
         setattr(self, old_name, new_func)
         return _linker  # Should be self
+
+    def _set_explicit_linkers(self, linkers, old_linker):
+        """Set explicit linkers at end of init and restore linker decorator."""
+        if isinstance(linkers, str):
+            self._linker(linkers)
+        else:
+            for linker in linkers:
+                self._linker(linker)
+        self.linker = old_linker
+
+    def _linker(self, public_name):
+        """Links explicitly passed linkers from init."""
+        setattr(self, f"_hidden_{public_name}", getattr(self, f"_{public_name}"))
+        setattr(self, f"_{public_name}", getattr(self, f"_linked_{public_name}"))
 
     def linked(self, linked_attribute):  # TODO: Add optional args for designating auto-created property attributes? (e.g. _name)
         """Adds property to set of linked properties to be updated (deleted) when a linker-method is called."""
