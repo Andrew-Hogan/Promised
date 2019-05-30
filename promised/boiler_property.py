@@ -194,9 +194,9 @@ class linked(object):
                 If True, this property should only ever return instances of a single class.
         """
         self._linked = set()  # Linked properties
-        self._external_linked = {}  # External dependent properties to be updated in another class upon change.
+        self._external_linked = Member(lambda *_: set())  # External dependent properties to be updated in another class upon change.
         self._chain = chain  # Boolean - is chain dependency source?
-        self._internal_to_chain = {}  # Dependent properties to be updated from this property's value's class upon change.
+        self._internal_to_chain = Member(lambda *_: set())  # Dependent properties to be updated from this property's value's class upon change.
         self._most_recent_internal = None  # Tracks most recent chain-decorated methods.
         old_linker = self.linker
         if linkers is not None:
@@ -220,7 +220,9 @@ class linked(object):
     def keeper(self, _keeper):
         """Set keeper and _name / doc from init or decoration."""
         self._most_recent_linker = self._linked_keeper
-        self._attribute_name_of_class_instance = _keeper if _keeper is None else name_to_snake_case(_keeper.__qualname__.split(".")[-2])
+        self._attribute_name_of_class_instance = _keeper if _keeper is None else name_to_snake_case(
+            _keeper.__qualname__.split(".")[-2]
+        )
         if _keeper:
             self._name = "_" + _keeper.__name__ if self._name is None else self._name  # First pref is init name arg
             self.__doc__ = _keeper.__doc__ if self.doc is None else self.doc  # First pref is init doc arg
@@ -391,10 +393,7 @@ class linked(object):
             name = linked_attribute._attribute_name_of_class_instance
             self._linked.add(linked_attribute)
         if name != self._attribute_name_of_class_instance:
-            try:
-                self._external_linked[name].add(linked_attribute)
-            except KeyError:
-                self._external_linked.update({name: {linked_attribute}})
+            self._external_linked[name].add(linked_attribute)
         else:
             self._linked.add(linked_attribute)
         return linked_attribute
@@ -415,10 +414,7 @@ class linked(object):
             _ = linked_attribute._attribute_name_of_class_instance
         except AttributeError:
             linked_attribute = linked(linked_attribute)
-        try:
-            self._internal_to_chain[linked_property_name].add(linked_attribute)
-        except KeyError:
-            self._internal_to_chain.update({linked_property_name: {linked_attribute}})
+        self._internal_to_chain[linked_property_name].add(linked_attribute)
         return linked_attribute
 
     def internal_chain_keeper(self, instance):
@@ -456,7 +452,7 @@ class linked(object):
     __str__ = __repr__
 
 
-class Member(object):
+class Member(dict):
     """
     A map of cached properties per input key which will cache a property for that key when first accessed.
 
@@ -496,44 +492,14 @@ class Member(object):
     """
     def __init__(self, getter, *args, **kwargs):
         super().__init__()
-        self._members = {}
         self._args = args
         self._kwargs = kwargs
         self._getter = getter
 
-    def __getitem__(self, key):
-        try:
-            return self._members[key]
-        except KeyError:
-            self._members.update({key: self._getter(key, *self._args, **self._kwargs)})
-        return self._members[key]
-
-    def __setitem__(self, key, value):
-        return self._members.__setitem__(key, value)
-
-    def __delitem__(self, key):
-        return self._members.__delitem__(key)
-
-    def __contains__(self, item):
-        return item in self._members
-
-    def __len__(self):
-        return len(self._members)
-
-    def items(self):
-        return self._members.items()
-
-    def values(self):
-        return self._members.values()
-
-    def keys(self):
-        return self._members.keys()
-
-    def __repr__(self, *_, **__):
-        return f"<promised member attribute for {self._getter.__name__} with id #{id(self)}>"
-
-    def __str__(self, *_, **__):
-        return str(self._members)
+    def __missing__(self, key):
+        value = self._getter(key, *self._args, **self._kwargs)
+        self.update({key: value})
+        return value
 
 
 _TEST_VALUE = "Set by promise keeper"
