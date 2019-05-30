@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="promised",
-    version="1.1.1",
+    version="1.2.1",
     author="Andrew M. Hogan",
     author_email="drewthedruid@gmail.com",
     description="A flexible cached property with get/set/del/init/dependant/cached-mapping capabilities.",
@@ -15,7 +15,7 @@ setuptools.setup(
     packages=setuptools.find_packages(),
     install_requires=[],
     platforms=['any'],
-    license="LICENSE",
+    license="Apache License 2.0",
     classifiers=[
         "Intended Audience :: Developers",
         "Programming Language :: Python :: 3",

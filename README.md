@@ -32,8 +32,8 @@ class _TestLine(object):
     @linked
     def length(self):
         self._length = 2.0
-
-
+```
+```
 class _TestSquare(object):
     @linked(chain=True)
     def side(self):
@@ -51,8 +51,8 @@ class _TestSquare(object):
     @height.linked
     def area(self):
         self._area = self.width * self.height
-
-
+```
+```
 class _TestBox(object):
     """This is a test class for linked promises. I don't know what more you're expecting."""
     @linked(chain=True)
@@ -67,8 +67,8 @@ class _TestBox(object):
     @base.chain("area")
     def volume(self):
         self._volume = self.base.area * self.side.length
-
-
+```
+```
 def _test_area():
     box = _TestBox()
     assert box.volume == 8.0, "Box volume is 2.0 * 2.0 * 2.0 as Line's default length is 2.0"
