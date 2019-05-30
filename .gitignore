@@ -1,0 +1,7 @@
+*.pyc
+promised.egg-info/*
+build/*
+dist/*
+.idea/*
+venv/*
+.coverage
