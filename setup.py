@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="promised",
-    version="1.2.1",
+    version="1.2.2",
     author="Andrew M. Hogan",
     author_email="drewthedruid@gmail.com",
     description="A flexible cached property with get/set/del/init/dependant/cached-mapping capabilities.",

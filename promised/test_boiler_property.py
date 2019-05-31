@@ -1,5 +1,8 @@
 
-import promised.boiler_property
+try:
+    from promised.boiler_property import promise, linked, Member
+except ModuleNotFoundError:
+    from boiler_property import promise, linked, Member
 
 
 _TEST_VALUE = "Set by promise keeper"
@@ -15,7 +18,7 @@ _TEST_VOLUME_A = _TEST_AREA_A * _TEST_LENGTH_A
 
 class _TestClass(object):
     """This is a test class for promises & Members. I don't know what more you're expecting."""
-    @promised.boiler_property.promise
+    @promise
     def test_attribute(self):
         assert self.__class__ is _TestClass, "Keeper method not bound to instance of _TestClass."
         assert not hasattr(self, "_test_attribute"), "Keeper method called despite existing self._test_attribute."
@@ -34,19 +37,19 @@ class _TestClass(object):
         self._test_attribute = value
         assert self._test_attribute == value, "self._test_attribute not set to value in setter."
 
-    @promised.boiler_property.promise
+    @promise
     def test_member(self):
         assert self.__class__ is _TestClass, "Keeper method for member not bound to instance of _TestClass."
-        self._test_member = promised.boiler_property.Member(lambda x: x * x)
+        self._test_member = Member(lambda x: x * x)
 
     def _calc_test_member(self, key):
         assert self.__class__ is _TestClass, "Getter method for method member not bound to instance of _TestClass."
         return self.test_member[self.test_member[key]]
 
-    @promised.boiler_property.promise
+    @promise
     def test_member_from_method(self):
         assert self.__class__ is _TestClass, "Keeper method for method member not bound to instance of _TestClass."
-        self._test_member_from_method = promised.boiler_property.Member(self._calc_test_member)
+        self._test_member_from_method = Member(self._calc_test_member)
 
     def __repr__(self, *_, **__):
         return f"<{self.__class__.__name__} object {id(self)}>"
@@ -54,9 +57,14 @@ class _TestClass(object):
     __str__ = __repr__
 
 
+class _TestClassMisuse(object):
+    """This is a test class for misused linked promises. I don't know what more you're expecting."""
+    one = linked(None)
+
+
 class _TestClassTwo(object):
     """This is a test class for linked promises. I don't know what more you're expecting."""
-    @promised.boiler_property.linked
+    @linked
     def test_linked_link(self):
         assert self.__class__ is _TestClassTwo, "Linked link keeper method not bound to instance of _TestClassTwo."
         assert not hasattr(self, "_test_linked_link"), ("Linked link keeper method called "
@@ -66,7 +74,7 @@ class _TestClassTwo(object):
                                                        "in linked link keeper.")
 
     @test_linked_link.linked
-    @promised.boiler_property.linked
+    @linked
     def test_link(self):
         assert self.__class__ is _TestClassTwo, "Link keeper method not bound to instance of _TestClassTwo."
         assert not hasattr(self, "_test_link"), "Link keeper method called despite existing self._test_link."
@@ -80,7 +88,7 @@ class _TestClassTwo(object):
         self._test_linked_link = value
         assert self._test_linked_link == value, "self._test_linked_link not set to value in setter."
 
-    @promised.boiler_property.promise
+    @promise
     def test_attribute(self):
         assert self.__class__ is _TestClassTwo, "Keeper method not bound to instance of _TestClassTwo."
         assert not hasattr(self, "_test_attribute"), "Keeper method called despite existing self._test_attribute."
@@ -107,7 +115,7 @@ class _TestLine(object):
     def __init__(self, length=_TEST_LENGTH_INIT):
         self._length = length
 
-    @promised.boiler_property.linked
+    @linked
     def length(self):
         self._length = _TEST_LENGTH_A
 
@@ -118,7 +126,7 @@ class _TestSquare(object):
         if width is not None:
             self._side = _TestLine(width)
 
-    @promised.boiler_property.linked(chain=True)
+    @linked(chain=True)
     def side(self):
         self._side = _TestLine()
 
@@ -132,17 +140,18 @@ class _TestSquare(object):
 
     @width.linked
     @height.linked
+    @linked
     def area(self):
         self._area = self.width * self.height
 
 
 class _TestBox(object):
     """This is a test class for linked promises. I don't know what more you're expecting."""
-    @promised.boiler_property.linked(chain=True)
+    @linked(chain=True)
     def side(self):
         self._side = _TestLine()
 
-    @promised.boiler_property.linked(chain=True)
+    @linked(chain=True)
     def base(self):
         self._base = _TestSquare()
 
@@ -243,6 +252,16 @@ def test_linkers():
     del _test_object.test_link
 
 
+def test_misuse():
+    test = _TestClassMisuse()
+    try:
+        _ = test.one
+    except AttributeError:
+        pass
+    else:
+        raise AssertionError("Accessing linked attribute without keeper did not raise AttributeError.")
+
+
 def test_external_linkers():
     line = _TestLine()
     square = _TestSquare()
@@ -286,6 +305,7 @@ def main():
     test_functionality()
     test_linkers()
     test_external_linkers()
+    test_misuse()
     print("Tests passed!")
 
 

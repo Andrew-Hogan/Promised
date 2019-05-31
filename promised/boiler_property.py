@@ -8,7 +8,92 @@ def name_to_snake_case(name):
     return re.sub('((?!^)(?<!_)[A-Z][a-z]+|(?<=[a-z0-9])[A-Z])', r'_\1', name).lower()
 
 
-class promise(object):
+class _BasePropertyAccess(object):
+    def __init__(self, name: Union[str, None] = None, doc: Union[str, None] = None):
+        self._name = name  # Name of hidden attribute in source class. (set in keeper)
+        self.doc = doc  # Doc of attribute in source class.
+
+    def keeper(self, *_):
+        raise NotImplementedError
+
+    def getter(self, *_):
+        raise NotImplementedError
+
+    def setter(self, *_):
+        raise NotImplementedError
+
+    def deleter(self, *_):
+        raise NotImplementedError
+
+    def _default_getter(self, obj):
+        """Use getattr(obj, self._name) as default getter if no getter decorated nor provided at init."""
+        try:
+            return getattr(obj, self._name)
+        except TypeError:
+            raise
+
+    def _default_setter(self, obj, value):
+        """Use setattr(obj, self._name, value) as default setter if no setter decorated nor provided at init."""
+        try:
+            setattr(obj, self._name, value)
+        except TypeError:
+            raise
+
+    def _default_deleter(self, obj):
+        """Use delattr(obj, self._name) as default deleter if no deleter decorated nor provided at init."""
+        try:
+            delattr(obj, self._name)
+        except AttributeError:
+            pass
+        except TypeError:
+            raise
+
+    def __call__(self, func):
+        self.keeper(func)
+        return self
+
+    def __get__(self, instance, owner):
+        try:
+            return self._getter(instance)
+        except AttributeError:
+            if instance is None:
+                return self
+            try:
+                self._keeper(instance)
+            except TypeError:
+                raise AttributeError("Promised property keeper not set.")
+        except TypeError:
+            if self._name is None and self._keeper:
+                raise AttributeError("Promised property private _name variable set to None. [Was a keeper provided?]")
+            else:
+                raise AttributeError("Promised property keeper not set.")
+        return self._getter(instance)
+
+    def __set__(self, instance, value):
+        try:
+            self._setter(instance, value)
+        except TypeError:
+            if self._name is None:
+                raise AttributeError("Promised property private _name variable set to None. [Was a keeper provided?]")
+            else:
+                raise AttributeError("Promised property does not have a setter.")
+
+    def __delete__(self, obj):
+        try:
+            self._deleter(obj)
+        except TypeError:
+            if self._name is None:
+                raise AttributeError("Promised property private _name variable set to None. [Was a keeper provided?]")
+            else:
+                raise AttributeError("Promised property does not have a deleter.")
+
+    def __repr__(self, *_, **__):
+        return f"<{self.__class__} hidden attribute {self._name} id #{id(self)}>"
+
+    __str__ = __repr__
+
+
+class promise(_BasePropertyAccess):
     """
     A flexible cached property with get/set/del/init/cached-mapping capabilities for inter-property relationships.
 
@@ -102,8 +187,7 @@ class promise(object):
             :param setter: Setter for changing stored property value, setattr(object, self._name, value) if None,
                 or disabled if False.
         """
-        self._name = name
-        self.doc = doc
+        super().__init__(name, doc)
         self.keeper(keeper)
         self.getter(getter)
         self.setter(setter)
@@ -115,53 +199,25 @@ class promise(object):
             self._name = "_" + _keeper.__name__ if self._name is None else self._name  # First pref is init name arg
             self.__doc__ = _keeper.__doc__ if self.doc is None else self.doc  # First pref is init doc arg
         else:
-            self._name = self._name if self._name is not None else "_broken_promise"
             if self.doc:
                 self.__doc__ = self.doc
         self._keeper = _keeper
         return self
 
-    def setter(self, _setter):
-        self._setter = _setter
+    def getter(self, _getter):
+        self._getter = _getter if _getter is not None else self._default_getter
         return self
 
-    def getter(self, _getter):
-        self._getter = _getter if _getter is not None else lambda x: getattr(x, self._name)
+    def setter(self, _setter):
+        self._setter = _setter if _setter is not None else self._default_setter
         return self
 
     def deleter(self, _deleter):
-        self._deleter = _deleter
+        self._deleter = _deleter if _deleter is not None else self._default_deleter
         return self
 
-    def __call__(self, func):
-        self.keeper(func)
-        return self
 
-    def __get__(self, instance, owner):
-        try:
-            return self._getter(instance)
-        except AttributeError:
-            if instance is None:
-                return self
-            assert self._keeper is not None, AttributeError("Promised property keeper not set.")
-            self._keeper(instance)
-        return self._getter(instance)
-
-    def __set__(self, instance, value):
-        assert self._setter is not None, AttributeError("Promised property does not have a setter.")
-        self._setter(instance, value)
-
-    def __delete__(self, obj):
-        assert self._deleter is not None, AttributeError("Promised property does not have a deleter.")
-        self._deleter(obj)
-
-    def __repr__(self, *_, **__):
-        return f"<promised hidden attribute {self._name} id #{id(self)}>"
-
-    __str__ = __repr__
-
-
-class linked(object):
+class linked(_BasePropertyAccess):
     """
     A flexible cached property with get/set/del/init/dependant capabilities for inter-property relationships.
 
@@ -210,6 +266,7 @@ class linked(object):
             :param chain: True if this property is a source of property dependencies external to the instance's class.
                 If True, this property should only ever return instances of a single class.
         """
+        super().__init__(name, doc)
         self._linked = set()  # Linked properties
         self._external_linked = Member(lambda *_: set())  # External dependent properties to be updated in another class upon change.
         self._chain = chain  # Boolean - is chain dependency source?
@@ -219,8 +276,6 @@ class linked(object):
         if linkers is not None:
             self.linker = lambda _: None  # Linker decorated temporarily removed to prevent default linkers if linkers.
         self._most_recent_linker = None  # Tracks most recent link-decorated methods.
-        self._name = name  # Name of hidden attribute in source class. (set in keeper)
-        self.doc = doc  # Doc of attribute in source class.
         self.keeper(keeper)
         self.getter(getter)
         if setter is not False:
@@ -265,7 +320,7 @@ class linked(object):
     def getter(self, _getter):
         """Set getter if provided else default getter of getattr(x, self._name)."""
         self._most_recent_linker = self._linked_getter
-        self._getter = _getter if _getter is not None else lambda x: getattr(x, self._name)
+        self._getter = _getter if _getter is not None else self._default_getter
         return self
 
     def _linked_getter(self, instance):
@@ -281,7 +336,7 @@ class linked(object):
         """Set setter if provided else default setter (with linked-deletion calls if no init linkers)."""
         self._most_recent_linker = self._linked_setter
         if _setter is None:
-            self._setter = lambda x, y: setattr(x, self._name, y)
+            self._setter = self._default_setter
             if self._chain:
                 self._chain_setter = self._setter
                 self._setter = self.chain_setter
@@ -327,13 +382,6 @@ class linked(object):
                 self._deleter = self.chain_deleter
         return self
 
-    def _default_deleter(self, obj):
-        """Use delattr(obj, self._name) as default deleter if no deleter decorated nor provided at init."""
-        try:
-            delattr(obj, self._name)
-        except AttributeError:
-            pass
-
     def _linked_deleter(self, obj):
         """Called before deleter if deleter is linker. (True if no linkers at init and default deleter.)"""
         self._hidden_deleter(obj)
@@ -365,12 +413,10 @@ class linked(object):
                 instance = getattr(obj, linked_instance_name)
             except AttributeError:
                 pass
-                # print(f"Error updating external linked for linked {linked_instance_name} in {obj}: {e}")
             else:
                 for linked_property in linked_instance_properties:
                     try:
                         linked_property.__delete__(instance)
-                        # print(f"Deleted property {linked_property} in external {instance}!")
                     except AttributeError:
                         pass
         self._deleter = old_deleter
@@ -417,7 +463,6 @@ class linked(object):
 
     def chain(self, linked_property_name):  # TODO: Add optional args for designating auto-created property attributes? (e.g. _name)
         """Adds property to set of linked properties to be updated (deleted) when a linker-method is called."""
-        print(f"Chaining {linked_property_name} internally")
         self._most_recent_internal = linked_property_name
         if not hasattr(self, "_internal_chain_keeper"):
             self._internal_chain_keeper = self._keeper
@@ -426,7 +471,6 @@ class linked(object):
 
     def _setup_internal_chain(self, linked_attribute):  # TODO: Currently assumes return from this property's keeper will only ever be one class.
         linked_property_name = self._most_recent_internal
-        print(f"Chaining {linked_property_name} externally")
         try:
             _ = linked_attribute._attribute_name_of_class_instance
         except AttributeError:
@@ -442,31 +486,6 @@ class linked(object):
             for attribute in chained_attributes:
                 this_property.linked(attribute)
         self._keeper = self._internal_chain_keeper
-
-    def __call__(self, func):
-        self.keeper(func)
-        return self
-
-    def __get__(self, instance, owner):
-        try:
-            return self._getter(instance)
-        except AttributeError:
-            if instance is None:
-                return self
-            assert self._keeper is not None, AttributeError("Linked property keeper not set.")
-            self._keeper(instance)
-        return self._getter(instance)
-
-    def __set__(self, instance, value):
-        self._setter(instance, value)
-
-    def __delete__(self, obj):
-        self._deleter(obj)
-
-    def __repr__(self, *_, **__):
-        return f"<Linked hidden attribute {self._name} id #{id(self)}>"
-
-    __str__ = __repr__
 
 
 class Member(dict):
